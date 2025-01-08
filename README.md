@@ -10,3 +10,12 @@ Library for logging in Go using Uber's zap library
 
 ## Usage
 import the library
+    - `goredis "github.com/wordbox-tech/Backend-Library-GoRedis"`
+
+```go
+    RedisHelper *goredis.RedisHelper
+    RedisHelper.Get(KEY_SUFIX, userId, &userCache)
+    RedisHelper.Set(KEY_SUFIX, userId, user)
+    RedisHelper.Remove(KEY_SUFIX,userId)
+```
+
