@@ -9,7 +9,7 @@ Library for logging in Go using Uber's zap library
     - `go mod tidy -v`
 
 ## Usage
-import the library  
+import the library
     - `goredis "github.com/wordbox-tech/Backend-Library-GoRedis"`
 
 ```go
@@ -18,4 +18,3 @@ RedisHelper.Get(KEY_SUFIX, userId, &userCache)
 RedisHelper.Set(KEY_SUFIX, userId, user)
 RedisHelper.Remove(KEY_SUFIX,userId)
 ```
-
