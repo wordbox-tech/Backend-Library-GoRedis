@@ -21,14 +21,30 @@ type RedisHelper struct {
 	Expiration  time.Duration
 }
 
-func (dataSource *RedisHelper) Get(
+func (redisHelper *RedisHelper) NewClient(
+	host string,
+	port string,
+	databaseNumber int,
+) (*redis.Client, error) {
+	address := host + ":" + port
+
+	options := &redis.Options{
+		Addr: address,
+		DB:   databaseNumber,
+	}
+	client := redis.NewClient(options)
+
+	return client, nil
+}
+
+func (redisHelper *RedisHelper) Get(
 	keySufix string,
 	key string,
 	data interface{},
 ) error {
 	keyRedis := key + "_" + keySufix
-	cachedDataString, err := dataSource.RedisClient.
-		Get(dataSource.Ctx, keyRedis).Result()
+	cachedDataString, err := redisHelper.RedisClient.
+		Get(redisHelper.Ctx, keyRedis).Result()
 
 	if err != nil {
 		if err == redis.Nil {
@@ -45,7 +61,7 @@ func (dataSource *RedisHelper) Get(
 	return nil
 }
 
-func (dataSource *RedisHelper) Set(
+func (redisHelper *RedisHelper) Set(
 	keySufix string,
 	key string,
 	data interface{},
@@ -57,15 +73,15 @@ func (dataSource *RedisHelper) Set(
 		return err
 	}
 
-	return dataSource.RedisClient.
-		Set(dataSource.Ctx, keyRedis, cachedDataBytes, dataSource.Expiration).
+	return redisHelper.RedisClient.
+		Set(redisHelper.Ctx, keyRedis, cachedDataBytes, redisHelper.Expiration).
 		Err()
 }
 
-func (dataSource *RedisHelper) Remove(
+func (redisHelper *RedisHelper) Remove(
 	keySufix string,
 	key string,
 ) error {
 	keyRedis := key + "_" + keySufix
-	return dataSource.RedisClient.Del(context.Background(), keyRedis).Err()
+	return redisHelper.RedisClient.Del(context.Background(), keyRedis).Err()
 }
