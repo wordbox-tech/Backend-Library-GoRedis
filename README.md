@@ -13,6 +13,7 @@ import the library
     - `goredis "github.com/wordbox-tech/Backend-Library-GoRedis"`
 
 ```go
+RedisHelper.NewClient(host, port, databaseNumber)
 RedisHelper *goredis.RedisHelper
 RedisHelper.Get(KEY_SUFIX, userId, &userCache)
 RedisHelper.Set(KEY_SUFIX, userId, user)
