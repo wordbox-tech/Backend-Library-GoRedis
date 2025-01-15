@@ -21,7 +21,7 @@ type RedisHelper struct {
 	Expiration  time.Duration
 }
 
-func (redisHelper *RedisHelper) NewClient(
+func NewClient(
 	host string,
 	port string,
 	databaseNumber int,
