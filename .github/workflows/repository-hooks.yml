@@ -1,0 +1,135 @@
+name: Repository hooks overlap pilot — GoRedis
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repository-hooks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  repository-hooks:
+    name: repository-hooks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHON_IMAGE: python:3.12.16-bookworm@sha256:944739cf5efcccc19b18e82e2be0746a8b66fd60ca971c532493b7cc58a47b88
+    steps:
+      - name: Validate event before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text(encoding='utf-8'))
+          repo = 'wordbox-tech/Backend-Library-GoRedis'
+          pr = event['pull_request']
+          assert os.environ['GITHUB_EVENT_NAME'] == 'pull_request', 'Unsupported event'
+          assert event['action'] in {'opened', 'synchronize', 'reopened', 'edited', 'ready_for_review'}, 'Unsupported action'
+          assert os.environ['GITHUB_REPOSITORY'] == event['repository']['full_name'] == repo, 'Unsupported repository'
+          assert pr['head']['repo']['full_name'] == repo, 'Fork PRs are unsupported'
+          assert pr['base']['repo']['full_name'] == repo and pr['base']['ref'] == 'main', 'Unsupported base'
+          assert type(event['number']) is int and event['number'] == pr['number'], 'Invalid PR number'
+          assert os.environ['GITHUB_REF'] == f"refs/pull/{event['number']}/merge", 'Unsupported ref'
+          for sha in (os.environ['GITHUB_SHA'], pr['head']['sha'], pr['base']['sha']):
+              assert re.fullmatch('[0-9a-f]{40}', sha), 'Invalid commit'
+          print(f"Validated {event['action']} PR {event['number']}: main-target merge ref; no pilot branch restriction")
+          PY
+      - name: Check out the PR merge commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node24
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 2
+          submodules: false
+          lfs: false
+          allow-unsafe-pr-checkout: false
+      - name: Verify merge checkout and credential removal
+        shell: bash
+        env:
+          EXPECTED_MERGE: ${{ github.sha }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MERGE"
+          test "$(git show -s --format=%P HEAD)" = "$EXPECTED_BASE $EXPECTED_HEAD"
+          test -z "$(git symbolic-ref -q HEAD || true)"
+          python3 - <<'PY'
+          import os, subprocess
+          from pathlib import Path
+          result = subprocess.run(['git', 'config', '--local', '--name-only', '--get-regexp', r'(^include|credential|extraheader|sshcommand)'], capture_output=True, text=True)
+          assert result.returncode == 1 and not result.stdout, 'Unexpected local authentication configuration'
+          assert not list(Path(os.environ['RUNNER_TEMP']).glob('git-credentials-*.config')), 'Checkout credential file remains'
+          print('Verified detached merge parents; no local auth/include entries or checkout credential files remain')
+          PY
+      - name: Retrieve only hash-locked wheel inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/hooks-state/setup" "$RUNNER_TEMP/hooks-state/home" "$RUNNER_TEMP/hooks-wheels"
+          docker pull "$PYTHON_IMAGE"
+          docker run --rm --cap-drop=ALL --security-opt=no-new-privileges \
+            --user "$(id -u):$(id -g)" -e PYTHONUTF8=1 \
+            -v "$GITHUB_WORKSPACE/.github/hooks:/control:ro" \
+            -v "$RUNNER_TEMP/hooks-wheels:/wheels" \
+            "$PYTHON_IMAGE" python /control/locked_dependencies.py download /wheels
+      - name: Bootstrap from verified wheels and retrieve pinned sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --cap-drop=ALL --security-opt=no-new-privileges \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/state/home -e PRE_COMMIT_HOME=/state/cache \
+            -e PATH=/state/venv/bin:/usr/local/bin:/usr/bin:/bin \
+            -e PIP_CONFIG_FILE=/dev/null -e PIP_DISABLE_PIP_VERSION_CHECK=1 -e PIP_NO_CACHE_DIR=1 \
+            -e GIT_CONFIG_NOSYSTEM=1 -e GIT_CONFIG_GLOBAL=/dev/null -e GIT_TERMINAL_PROMPT=0 \
+            -e PYTHONUTF8=1 -e VIRTUALENV_NO_PERIODIC_UPDATE=1 \
+            -v "$RUNNER_TEMP/hooks-state:/state" -v "$RUNNER_TEMP/hooks-wheels:/wheels:ro" \
+            -v "$GITHUB_WORKSPACE/.github/hooks:/control:ro" \
+            -v "$GITHUB_WORKSPACE/.pre-commit-config.yaml:/config.yaml:ro" \
+            -w /state/setup "$PYTHON_IMAGE" sh -ec '
+              python /control/locked_dependencies.py verify /wheels
+              python -m venv /state/venv
+              python -m pip install --no-index --find-links=/wheels --require-hashes -r /wheels/bootstrap.txt
+              python /control/repository_hooks.py prepare /config.yaml
+            '
+      - name: Build hook environments offline from locked inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network=none --cap-drop=ALL --security-opt=no-new-privileges \
+            --read-only --tmpfs /tmp:rw,nosuid,nodev,size=256m \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/state/home -e PRE_COMMIT_HOME=/state/cache \
+            -e PATH=/state/venv/bin:/usr/local/bin:/usr/bin:/bin \
+            -e PIP_CONFIG_FILE=/dev/null -e PIP_DISABLE_PIP_VERSION_CHECK=1 -e PIP_NO_CACHE_DIR=1 \
+            -e PIP_NO_INDEX=1 -e PIP_FIND_LINKS=/wheels \
+            -e PIP_CONSTRAINT=/wheels/constraints.txt -e PIP_BUILD_CONSTRAINT=/wheels/constraints.txt \
+            -e GIT_CONFIG_NOSYSTEM=1 -e GIT_CONFIG_GLOBAL=/dev/null -e GIT_TERMINAL_PROMPT=0 \
+            -e PYTHONUTF8=1 -e VIRTUALENV_NO_PERIODIC_UPDATE=1 -e VIRTUALENV_DOWNLOAD=0 \
+            -e VIRTUALENV_PIP=26.2.2 -e VIRTUALENV_SETUPTOOLS=84.2.1 \
+            -v "$RUNNER_TEMP/hooks-state:/state" -v "$RUNNER_TEMP/hooks-wheels:/wheels:ro" \
+            -v "$GITHUB_WORKSPACE/.github/hooks:/control:ro" \
+            -v "$GITHUB_WORKSPACE/.pre-commit-config.yaml:/config.yaml:ro" \
+            -w /state/setup "$PYTHON_IMAGE" python /control/repository_hooks.py install /config.yaml /wheels
+      - name: Check every tracked file offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network=none --cap-drop=ALL --security-opt=no-new-privileges \
+            --read-only --tmpfs /tmp:rw,nosuid,nodev,size=128m \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/state/home -e PRE_COMMIT_HOME=/state/cache \
+            -e PATH=/state/venv/bin:/usr/local/bin:/usr/bin:/bin \
+            -e GIT_CONFIG_NOSYSTEM=1 -e GIT_CONFIG_GLOBAL=/dev/null -e GIT_TERMINAL_PROMPT=0 \
+            -e PYTHONUTF8=1 -e VIRTUALENV_NO_PERIODIC_UPDATE=1 \
+            -v "$RUNNER_TEMP/hooks-state:/state" \
+            -v "$GITHUB_WORKSPACE:/src" -w /src \
+            "$PYTHON_IMAGE" python .github/hooks/repository_hooks.py run
